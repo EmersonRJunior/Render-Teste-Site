@@ -1,123 +1,117 @@
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, flash
 from Bio import Entrez
 from datetime import datetime, timedelta
 import google.generativeai as genai
 import os
 import re
+from dotenv import load_dotenv
 
-# Configuração do Flask
-base_dir = os.path.dirname(os.path.abspath(__file__))
-app = Flask(__name__, template_folder=os.path.join(base_dir, 'templates'))
+# Carrega variáveis do arquivo .env
+load_dotenv()
 
-# --- CONFIGURAÇÕES ---
-# Coloque um email válido para o PubMed não bloquear o seu IP
-Entrez.email = "emersonritzjunior@gmail.com"
-GEMINI_API_KEY = "AIzaSyASnfSyvIrKmPKj2VHt4YOY3Vcfh6Vs_g0"
+app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "chave-secreta-padrao-para-dev")
 
-# Configuração Oficial da API Google
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# --- CONFIGURAÇÕES VIA AMBIENTE ---
+# Nunca deixe sua API Key exposta no código ao subir para o GitHub
+Entrez.email = os.getenv("PUBMED_EMAIL", "seu-email@exemplo.com")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    print("AVISO: GEMINI_API_KEY não encontrada. O sistema de IA não funcionará.")
 
 def gerar_conteudo_gemini(prompt):
-    """Gera conteúdo usando a SDK oficial do Google."""
+    """Gera conteúdo com tratamento de erro e segurança."""
+    if not GEMINI_API_KEY:
+        return "Erro: API Key não configurada."
     try:
         response = model.generate_content(prompt)
-        if response and response.text:
-            return response.text
-        return ""
+        return response.text if response and response.text else ""
     except Exception as e:
-        print(f"Erro Gemini: {e}")
+        app.logger.error(f"Erro na API Gemini: {e}")
         return ""
-
-def limpar_query(texto):
-    """Extrai apenas o que está entre parênteses ou limpa lixo da resposta da IA."""
-    # Tenta encontrar conteúdo entre parênteses
-    match = re.search(r'\((.*?)\)', texto)
-    if match:
-        return match.group(0)
-    # Se não houver parênteses, remove caracteres especiais e mantém palavras-chave
-    limpo = re.sub(r'[^a-zA-Z0-9\s"()]', '', texto)
-    return limpo.strip()
 
 def processar_termos_busca(termos_usuario):
-    """Traduz termos do utilizador para inglês científico MeSH."""
+    """Converte termos do usuário para MeSH utilizando IA."""
+    # Limpeza básica contra injeção de prompt
+    termos_limpos = re.sub(r'[^\w\s]', '', termos_usuario)
+    
     prompt = (
-        f"Atue como um bibliotecário científico. Traduza o seguinte tema de fisioterapia/treino "
-        f"para uma query de busca PubMed (MeSH terms) em inglês. "
-        f"Retorne APENAS a query entre parênteses. Exemplo: (Hypertrophy AND Resistance Training). "
-        f"Tema: {termos_usuario}"
+        f"Atue como um bibliotecário científico. Traduza o tema abaixo para uma "
+        f"query PubMed (MeSH terms) em inglês. Retorne APENAS a query entre parênteses. "
+        f"Tema: {termos_limpos}"
     )
+    
     resultado = gerar_conteudo_gemini(prompt)
-    query = limpar_query(resultado)
-    return query if query else f"({termos_usuario})"
+    
+    # Extração robusta da query entre parênteses
+    match = re.search(r'\((.*?)\)', resultado)
+    return match.group(0) if match else f"({termos_limpos})"
 
 def buscar_detalhes_pubmed(id_list):
-    """Recupera os abstracts do PubMed com tratamento de erro."""
+    """Busca abstracts de forma segura."""
     if not id_list: return ""
     try:
-        handle = Entrez.efetch(db="pubmed", id=id_list, rettype="abstract", retmode="text")
-        dados = handle.read()
-        handle.close()
-        return dados
+        with Entrez.efetch(db="pubmed", id=id_list, rettype="abstract", retmode="text") as handle:
+            return handle.read()
     except Exception as e:
-        print(f"Erro ao buscar abstracts: {e}")
+        app.logger.error(f"Erro PubMed Fetch: {e}")
         return ""
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     relatorio = None
     tema_exibicao = ""
-    query_executada = ""
     
     if request.method == 'POST':
-        tema_original = request.form.get('tema')
+        tema_original = request.form.get('tema', '').strip()
         periodo = request.form.get('periodo', '30')
-        tema_exibicao = tema_original
         
-        # 1. Tradução e Limpeza
+        if not tema_original:
+            flash("Por favor, digite um tema para pesquisa.")
+            return render_template('index.html')
+
+        tema_exibicao = tema_original
         query_ingles = processar_termos_busca(tema_original)
         
-        # 2. Formatação da Data (PubMed format: YYYY/MM/DD)
+        # Formatação de data PubMed
         data_limite = (datetime.now() - timedelta(days=int(periodo))).strftime("%Y/%m/%d")
         query_final = f"{query_ingles} AND (\"{data_limite}\"[Date - Publication] : \"3000\"[Date - Publication])"
-        query_executada = query_final # Para debug visual se necessário
         
         try:
-            # Busca no PubMed
-            handle = Entrez.esearch(db="pubmed", term=query_final, retmax=5)
-            record = Entrez.read(handle)
-            handle.close()
-            ids = record.get("IdList", [])
-            
-            # Se não encontrar nada com data, tenta busca geral (sem data) para não dar vazio
-            if not ids:
-                handle = Entrez.esearch(db="pubmed", term=query_ingles, retmax=3)
+            # Busca IDs
+            with Entrez.esearch(db="pubmed", term=query_final, retmax=5) as handle:
                 record = Entrez.read(handle)
-                handle.close()
                 ids = record.get("IdList", [])
+
+            # Fallback caso não encontre artigos recentes
+            if not ids:
+                with Entrez.esearch(db="pubmed", term=query_ingles, retmax=3) as handle:
+                    record = Entrez.read(handle)
+                    ids = record.get("IdList", [])
 
             if ids:
                 texto_abstracts = buscar_detalhes_pubmed(ids)
-                
-                # 3. Resumo com foco em Recuperação e Hipertrofia
-                prompt_resumo = f"""
-                Analise estes resumos científicos sobre {tema_original}:
-                {texto_abstracts}
-                
-                Escreva um relatório em PORTUGUÊS (Brasil) focado em:
-                - Principais achados científicos.
-                - Aplicação prática para REABILITAÇÃO/RECUPERAÇÃO.
-                - Aplicação prática para HIPERTROFIA.
-                - Liste os links: https://pubmed.ncbi.nlm.nih.gov/ID/
-                """
+                prompt_resumo = (
+                    f"Analise estes resumos científicos sobre {tema_original}:\n{texto_abstracts}\n\n"
+                    f"Escreva um relatório em PORTUGUÊS (Brasil) focado em:\n"
+                    f"- Principais achados.\n- Aplicação em REABILITAÇÃO.\n- Aplicação em HIPERTROFIA.\n"
+                    f"Ao final, liste os links no formato: https://pubmed.ncbi.nlm.nih.gov/ID/"
+                )
                 relatorio = gerar_conteudo_gemini(prompt_resumo)
             else:
-                relatorio = f"Não encontramos artigos recentes para: {query_ingles}. Tente termos mais simples como 'ACL recovery' ou 'Muscle Hypertrophy'."
+                relatorio = "Nenhum artigo encontrado para este tema."
+                
         except Exception as e:
-            relatorio = f"Erro no processo de busca: {str(e)}"
+            app.logger.error(f"Erro Geral: {e}")
+            relatorio = "Ocorreu um erro técnico ao processar sua busca."
             
     return render_template('index.html', relatorio=relatorio, tema=tema_exibicao)
 
 if __name__ == '__main__':
+    # Configuração para deploy (Heroku, Render, etc)
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
