@@ -2,8 +2,3 @@ flask
 biopython
 requests
 gunicorn
-3.  **`Procfile`**: Deve ter exatamente:
-```text
-web: gunicorn app:app
-4.  **Deploy**: No Render, ao escolher "Web Service", ele vai detetar o `requirements.txt` e instalar tudo. Como usas a API do Gemini para tradução e resumo, o sistema ficará muito rápido.
-
