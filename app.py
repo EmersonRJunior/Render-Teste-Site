@@ -14,9 +14,9 @@ Entrez.email = "seu_email@email.com"
 GEMINI_API_KEY = "AIzaSyASnfSyvIrKmPKj2VHt4YOY3Vcfh6Vs_g0"
 
 def gerar_conteudo_gemini(prompt):
-    """Função robusta para chamar a API do Gemini 1.5 Flash."""
-    # Usando o modelo estável 1.5 Flash que é gratuito e rápido
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    """Função robusta para chamar a API do Gemini utilizando a versão v1 estável."""
+    # Alterado para v1 para evitar problemas de compatibilidade com modelos flash
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     payload = {
         "contents": [{
@@ -24,11 +24,15 @@ def gerar_conteudo_gemini(prompt):
         }]
     }
     
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
     try:
-        response = requests.post(url, json=payload, timeout=30)
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
         data = response.json()
         
-        # Verificação detalhada da resposta para evitar erro 'candidates'
+        # Verificação da resposta
         if 'candidates' in data and len(data['candidates']) > 0:
             return data['candidates'][0]['content']['parts'][0]['text']
         elif 'error' in data:
@@ -64,17 +68,18 @@ def buscar_detalhes_pubmed(id_list):
 def index():
     relatorio = None
     tema_exibicao = ""
+    periodo_selecionado = "30"
     
     if request.method == 'POST':
         tema_original = request.form.get('tema')
-        periodo = request.form.get('periodo', '30')
+        periodo_selecionado = request.form.get('periodo', '30')
         tema_exibicao = tema_original
         
         # 1. Tradução
         query_ingles = processar_termos_busca(tema_original)
         
         # 2. Busca PubMed
-        data_inicio = (datetime.now() - timedelta(days=int(periodo))).strftime("%Y/%m/%d")
+        data_inicio = (datetime.now() - timedelta(days=int(periodo_selecionado))).strftime("%Y/%m/%d")
         query_final = f"{query_ingles} AND ({data_inicio}[PDAT] : 3000[PDAT])"
         
         try:
@@ -100,11 +105,11 @@ def index():
                 """
                 relatorio = gerar_conteudo_gemini(prompt_resumo)
             else:
-                relatorio = "Nenhum artigo recente encontrado. Tente termos mais amplos."
+                relatorio = "Nenhum artigo recente encontrado. Tente termos mais amplos ou um período maior."
         except Exception as e:
             relatorio = f"Erro no sistema: {str(e)}"
             
-    return render_template('index.html', relatorio=relatorio, tema=tema_exibicao)
+    return render_template('index.html', relatorio=relatorio, tema=tema_exibicao, periodo=periodo_selecionado)
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
