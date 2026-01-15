@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request
 from Bio import Entrez
 from datetime import datetime, timedelta
-import requests
+import google.generativeai as genai
 import os
 
 # Configuração do Flask
@@ -10,45 +10,27 @@ app = Flask(__name__, template_folder=os.path.join(base_dir, 'templates'))
 
 # --- CONFIGURAÇÕES ---
 Entrez.email = "seu_email@email.com"
-# A sua chave de API
 GEMINI_API_KEY = "AIzaSyASnfSyvIrKmPKj2VHt4YOY3Vcfh6Vs_g0"
 
+# Configuração Oficial da API Google
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
+
 def gerar_conteudo_gemini(prompt):
-    """Função robusta para chamar a API do Gemini utilizando a versão v1 estável."""
-    # Alterado para v1 para evitar problemas de compatibilidade com modelos flash
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
-    
-    headers = {
-        "Content-Type": "application/json"
-    }
-    
+    """Usa a biblioteca oficial para gerar conteúdo, mais estável no Render."""
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        data = response.json()
-        
-        # Verificação da resposta
-        if 'candidates' in data and len(data['candidates']) > 0:
-            return data['candidates'][0]['content']['parts'][0]['text']
-        elif 'error' in data:
-            return f"Erro da API Gemini: {data['error'].get('message', 'Erro desconhecido')}"
-        else:
-            return "A IA não conseguiu gerar uma resposta. Tente novamente."
-            
+        response = model.generate_content(prompt)
+        if response and response.text:
+            return response.text
+        return "A IA não retornou dados. Tente novamente."
     except Exception as e:
-        return f"Erro de conexão com a IA: {str(e)}"
+        return f"Erro na API Gemini (Região/Chave): {str(e)}"
 
 def processar_termos_busca(termos_usuario):
-    """Traduz termos para inglês técnico."""
-    prompt = f"Traduza para termos científicos MeSH em inglês, retorne APENAS os termos entre parênteses: {termos_usuario}"
+    """Traduz termos para inglês técnico MeSH."""
+    prompt = f"Traduza os termos de reabilitação/fisioterapia para MeSH terms em inglês. Retorne APENAS os termos entre parênteses: {termos_usuario}"
     resultado = gerar_conteudo_gemini(prompt)
     
-    # Limpeza básica caso a IA responda com texto extra
     if "(" in resultado and ")" in resultado:
         return resultado[resultado.find("("):resultado.find(")")+1]
     return f"({termos_usuario})"
@@ -75,7 +57,7 @@ def index():
         periodo_selecionado = request.form.get('periodo', '30')
         tema_exibicao = tema_original
         
-        # 1. Tradução
+        # 1. Tradução via IA
         query_ingles = processar_termos_busca(tema_original)
         
         # 2. Busca PubMed
@@ -91,23 +73,22 @@ def index():
             if ids:
                 texto_abstracts = buscar_detalhes_pubmed(ids)
                 
-                # 3. Resumo Clínico focado em Reabilitação e Hipertrofia
+                # 3. Resumo com foco em Recuperação e Hipertrofia
                 prompt_resumo = f"""
-                Analise estes artigos científicos sobre {tema_original}.
-                Traduza e resuma para Português com foco em:
-                1. Conclusões principais.
-                2. Aplicação prática para Recuperação de Lesões.
-                3. Aplicação prática para Hipertrofia.
-                4. Links de referência: https://pubmed.ncbi.nlm.nih.gov/ID/
-                
-                ARTIGOS:
+                Você é um especialista em fisiologia do exercício. Analise estes abstracts sobre {tema_original}:
                 {texto_abstracts}
+                
+                Gere um relatório em PORTUGUÊS com:
+                - Resumo das evidências atuais.
+                - Aplicação prática para Recuperação de Lesões.
+                - Aplicação prática para Hipertrofia.
+                - Links (https://pubmed.ncbi.nlm.nih.gov/ID/).
                 """
                 relatorio = gerar_conteudo_gemini(prompt_resumo)
             else:
-                relatorio = "Nenhum artigo recente encontrado. Tente termos mais amplos ou um período maior."
+                relatorio = "Nenhum artigo encontrado para este período."
         except Exception as e:
-            relatorio = f"Erro no sistema: {str(e)}"
+            relatorio = f"Erro no servidor: {str(e)}"
             
     return render_template('index.html', relatorio=relatorio, tema=tema_exibicao, periodo=periodo_selecionado)
 
