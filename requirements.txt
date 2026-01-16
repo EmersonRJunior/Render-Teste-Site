@@ -1,5 +1,5 @@
-flask
-biopython
-requests
-gunicorn
-google-generativeai
+python-dotenv==1.0.1
+google-generativeai==0.8.3
+biopython==1.84
+Flask==3.0.3
+gunicorn==23.0.0
